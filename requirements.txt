@@ -1,0 +1,7 @@
+opencv-python
+ultralytics
+pygame
+pyttsx3
+google-generativeai
+numpy<2.0
+requests
