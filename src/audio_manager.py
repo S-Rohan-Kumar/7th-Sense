@@ -62,17 +62,26 @@ class AudioManager:
         if status: print(status)
         current_time = time.time()
         
-        # --- SIREN GENERATOR (Danger) ---
+        # Calculate Stereo Pan for ALL modes
+        # Input Pan: -1 (Left) to 1 (Right) -> Normalized: 0 (Left) to 1 (Right)
+        norm_pan = (self.current_pan + 1) / 2
+        norm_pan = max(0.0, min(1.0, norm_pan))
+
+        # --- SIREN GENERATOR (Critical Danger) ---
         if self.mode == "siren":
             t = (np.arange(frames) + self.phase) / self.sample_rate
+            # Sweep 800Hz - 1200Hz
             freq_sweep = 800 + 400 * np.abs(np.sin(2 * np.pi * 2 * t)) 
             tone = self.volume * 0.8 * (2 * (t * freq_sweep - np.floor(0.5 + t * freq_sweep)))
-            outdata[:, 0] = tone
-            outdata[:, 1] = tone
+            
+            # Apply Pan to Siren
+            outdata[:, 0] = tone * (1.0 - norm_pan) # Left
+            outdata[:, 1] = tone * norm_pan         # Right
+            
             self.phase += frames
             return
 
-        # --- BEEP GENERATOR ---
+        # --- BEEP GENERATOR (Warning Levels) ---
         if self.beep_interval > 0 and self.mode == "beep":
             if current_time - self.last_beep_time >= self.beep_interval:
                 self.last_beep_time = current_time
@@ -85,7 +94,8 @@ class AudioManager:
                 t = (np.arange(frames) + self.phase) / self.sample_rate
                 t = t.reshape(-1, 1)
                 tone = self.volume * np.sin(2 * np.pi * self.target_freq * t)
-                norm_pan = (self.current_pan + 1) / 2
+                
+                # Apply Pan to Beep
                 outdata[:, 0] = (tone * (1.0 - norm_pan)).flatten()
                 outdata[:, 1] = (tone * norm_pan).flatten()
                 self.phase += frames
@@ -96,26 +106,41 @@ class AudioManager:
             outdata.fill(0)
             self.phase = 0
 
-    # --- INTERFACE ---
+    # --- DANGER INTERFACE (LEVELS) ---
 
-    def set_hazard_mode(self):
-        """DANGER (General): Siren + Strong Haptic"""
-        self.mode = "siren"
-        self._trigger_haptic("heavy")
+    def set_danger_far(self, pan):
+        """Level 1: Far (~1m). Warning Beeps."""
+        self.mode = "beep"
+        self.current_pan = pan
+        self.target_freq = 660  # High-ish pitch
+        self.beep_interval = 0.5 # Medium speed
+        self.beep_duration = 0.1
 
-    def set_hazard_approaching(self, obj_name):
-        """DANGER (0.5-0.7m): Siren + Strong Haptic + VOICE"""
-        self.mode = "siren"
-        self._trigger_haptic("heavy")
+    def set_danger_approaching(self, pan, obj_name):
+        """Level 2: Mid (0.5-0.7m). Fast Beeps + Voice."""
+        self.mode = "beep"
+        self.current_pan = pan
+        self.target_freq = 880  # Higher pitch
+        self.beep_interval = 0.2 # Fast speed
+        self.beep_duration = 0.1
+        self._trigger_haptic("light")
         
-        # Voice Warning Overlay (with cooldown)
+        # Voice Warning Overlay
         current_time = time.time()
-        if current_time - self.last_tts_time > 5.0:
+        if current_time - self.last_tts_time > 4.0:
             self.speak(f"Warning {obj_name} approaching")
             self.last_tts_time = current_time
 
+    def set_danger_critical(self, pan):
+        """Level 3: Close (<0.5m). Siren + Heavy Haptic."""
+        self.mode = "siren"
+        self.current_pan = pan # Now respects panning!
+        self._trigger_haptic("heavy")
+
+    # --- SAFE OBJECT INTERFACE ---
+
     def announce_proximity(self, obj_name, pan):
-        """SAFE OBJECTS: Voice Only (No Beep)"""
+        """Safe Object: Voice Only."""
         self.silence() 
         
         direction = "in front"
@@ -148,4 +173,4 @@ class AudioManager:
                 eng.runAndWait()
             except: pass
             self.speaking_lock = False
-        threading.Thread(target=_run).start()   
+        threading.Thread(target=_run).start()

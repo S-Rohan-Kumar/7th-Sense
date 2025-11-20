@@ -52,25 +52,34 @@ def main():
             in_danger_mode = (current_time - last_danger_time) < DANGER_HOLD_DURATION
 
             if in_danger_mode:
-                # Calculate Coverage for Distance even in Danger Mode
+                # Calculate Coverage for Distance
                 coverage = 0
+                pan = 0
                 if closest_obj:
                     max_area = width * height
                     coverage = closest_obj['area'] / max_area
+                    pan = (closest_obj['center_x'] - (width/2)) / (width/2)
                 
                 label = danger_name if is_danger else "DANGER"
                 
-                # Check Range: 0.5m - 0.7m (Coverage roughly 0.15 to 0.40)
-                if 0.15 < coverage <= 0.40:
-                    # Danger Approaching: Siren + Voice
-                    audio.set_hazard_approaching(label)
+                # --- DANGER LEVELS ---
+                if coverage > 0.40:
+                    # CRITICAL (<0.5m): Siren
+                    audio.set_danger_critical(pan)
+                    cv2.putText(inf_frame, f"CRITICAL: {label}", (50, 50), 
+                           cv2.FONT_HERSHEY_SIMPLEX, 1, (0, 0, 255), 3)
+                           
+                elif coverage > 0.15:
+                    # APPROACHING (0.5-0.7m): Fast Beep + Voice
+                    audio.set_danger_approaching(pan, label)
                     cv2.putText(inf_frame, f"WARNING: {label}", (50, 50), 
                            cv2.FONT_HERSHEY_SIMPLEX, 1, (0, 165, 255), 3)
+                
                 else:
-                    # Too Close (<0.5m) or Far (>0.7m): Siren Only
-                    audio.set_hazard_mode()
-                    cv2.putText(inf_frame, f"HAZARD: {label}", (50, 50), 
-                           cv2.FONT_HERSHEY_SIMPLEX, 1, (0, 0, 255), 3)
+                    # FAR (~1m): Warning Beep
+                    audio.set_danger_far(pan)
+                    cv2.putText(inf_frame, f"DETECTED: {label}", (50, 50), 
+                           cv2.FONT_HERSHEY_SIMPLEX, 1, (0, 255, 255), 3)
             
             elif closest_obj:
                 # SAFE OBJECTS: Voice ONLY (and only when close)
