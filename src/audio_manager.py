@@ -3,6 +3,7 @@ import numpy as np
 import threading
 import pyttsx3
 import time
+import subprocess
 
 class AudioManager:
     def __init__(self):
@@ -12,19 +13,23 @@ class AudioManager:
         
         # --- STATE VARIABLES ---
         self.target_freq = 440.0
-        self.current_pan = 0.0 # -1.0 (Left) to 1.0 (Right)
+        self.current_pan = 0.0 
+        self.mode = "silence" # silence, beep, siren
         
-        # Beep Logic (Matches hand.py)
-        self.beep_interval = 0.0  # 0.0 = Silence/Off
+        # Beep Logic
+        self.beep_interval = 0.0
         self.last_beep_time = 0.0
-        self.beep_duration = 0.1  # 100ms beep length
+        self.beep_duration = 0.1
         self.is_beeping = False
         self.phase = 0
 
-        # TTS Engine
+        # TTS & Haptics
         self.speaking_lock = False
+        self.last_tts_time = 0
+        self.last_haptic_time = 0
+        self.last_spoken_obj = "" 
         
-        # Initialize Stream (Paused by default until start is called)
+        # Init Stream
         self.stream = sd.OutputStream(
             channels=2, 
             blocksize=512, 
@@ -33,86 +38,108 @@ class AudioManager:
         )
 
     def start(self):
-        """Starts the audio stream."""
         self.stream.start()
         return self
 
     def stop(self):
-        """Stops the audio stream."""
         self.stream.stop()
         self.stream.close()
 
+    def _trigger_haptic(self, intensity="light"):
+        now = time.time()
+        if now - self.last_haptic_time < 0.2: return
+        duration = "50" if intensity == "light" else "200"
+        try:
+            subprocess.Popen(
+                ["adb", "shell", "cmd", "vibrator", "vibrate", duration],
+                stdout=subprocess.DEVNULL, 
+                stderr=subprocess.DEVNULL
+            )
+        except: pass
+        self.last_haptic_time = now
+
     def audio_callback(self, outdata, frames, time_info, status):
-        """Real-time audio generation callback (runs on separate thread)."""
-        if status:
-            print(status)
-
+        if status: print(status)
         current_time = time.time()
+        
+        # --- SIREN GENERATOR (Danger) ---
+        if self.mode == "siren":
+            t = (np.arange(frames) + self.phase) / self.sample_rate
+            freq_sweep = 800 + 400 * np.abs(np.sin(2 * np.pi * 2 * t)) 
+            tone = self.volume * 0.8 * (2 * (t * freq_sweep - np.floor(0.5 + t * freq_sweep)))
+            outdata[:, 0] = tone
+            outdata[:, 1] = tone
+            self.phase += frames
+            return
 
-        # 1. Check logic to START a beep
-        if self.beep_interval > 0:
-            time_since_last = current_time - self.last_beep_time
-            if time_since_last >= self.beep_interval:
+        # --- BEEP GENERATOR ---
+        if self.beep_interval > 0 and self.mode == "beep":
+            if current_time - self.last_beep_time >= self.beep_interval:
                 self.last_beep_time = current_time
                 self.is_beeping = True
-
-        # 2. Check logic to STOP a beep
-        if self.is_beeping:
-            if current_time - self.last_beep_time > self.beep_duration:
+                
+            if self.is_beeping and (current_time - self.last_beep_time > self.beep_duration):
                 self.is_beeping = False
 
-        # 3. Generate Audio
-        if self.is_beeping and self.beep_interval > 0:
-            # Generate Sine Wave
-            t = (np.arange(frames) + self.phase) / self.sample_rate
-            t = t.reshape(-1, 1)
-            
-            tone = self.volume * np.sin(2 * np.pi * self.target_freq * t)
-            
-            # Stereo Panning logic: Map -1.0/1.0 (Main) to 0.0/1.0 (Synth Logic)
-            # Input Pan: -1 (Left), 0 (Center), 1 (Right)
-            # Synth Pan: 0 (Left), 0.5 (Center), 1 (Right)
-            norm_pan = (self.current_pan + 1) / 2
-            norm_pan = max(0.0, min(1.0, norm_pan))
-
-            left = tone * (1.0 - norm_pan)
-            right = tone * norm_pan
-            
-            outdata[:, 0] = left.flatten()
-            outdata[:, 1] = right.flatten()
-            
-            self.phase += frames
+            if self.is_beeping:
+                t = (np.arange(frames) + self.phase) / self.sample_rate
+                t = t.reshape(-1, 1)
+                tone = self.volume * np.sin(2 * np.pi * self.target_freq * t)
+                norm_pan = (self.current_pan + 1) / 2
+                outdata[:, 0] = (tone * (1.0 - norm_pan)).flatten()
+                outdata[:, 1] = (tone * norm_pan).flatten()
+                self.phase += frames
+            else:
+                outdata.fill(0)
+                self.phase = 0
         else:
-            # Silence
             outdata.fill(0)
             self.phase = 0
 
-    def update_sonar(self, pan, interval, freq=880):
-        """
-        Updates the continuous audio state.
-        pan: -1.0 (Left) to 1.0 (Right)
-        interval: Time in seconds between beeps (Lower = Faster)
-        freq: Tone pitch in Hz
-        """
-        self.current_pan = pan
-        self.beep_interval = interval
-        self.target_freq = freq
+    # --- INTERFACE ---
 
-    def play_danger(self):
-        """Sets audio to 'Danger Mode' (High pitch, very fast/continuous)."""
-        self.current_pan = 0.0 # Center
-        self.target_freq = 1200 # High pitch
-        self.beep_interval = 0.05 # Extremely fast (almost continuous)
+    def set_hazard_mode(self):
+        """DANGER (General): Siren + Strong Haptic"""
+        self.mode = "siren"
+        self._trigger_haptic("heavy")
+
+    def set_hazard_approaching(self, obj_name):
+        """DANGER (0.5-0.7m): Siren + Strong Haptic + VOICE"""
+        self.mode = "siren"
+        self._trigger_haptic("heavy")
+        
+        # Voice Warning Overlay (with cooldown)
+        current_time = time.time()
+        if current_time - self.last_tts_time > 5.0:
+            self.speak(f"Warning {obj_name} approaching")
+            self.last_tts_time = current_time
+
+    def announce_proximity(self, obj_name, pan):
+        """SAFE OBJECTS: Voice Only (No Beep)"""
+        self.silence() 
+        
+        direction = "in front"
+        if pan < -0.3: direction = "on your left"
+        elif pan > 0.3: direction = "on your right"
+
+        current_time = time.time()
+        is_new_object = (obj_name != self.last_spoken_obj)
+        is_time_up = (current_time - self.last_tts_time > 5.0)
+
+        if is_new_object or is_time_up:
+            text = f"{obj_name} {direction}"
+            print(f"[Audio] Speaking: {text}")
+            self.speak(text)
+            self.last_tts_time = current_time
+            self.last_spoken_obj = obj_name
 
     def silence(self):
-        """Turns off the beep."""
-        self.beep_interval = 0.0
+        self.mode = "silence"
         self.is_beeping = False
+        self.beep_interval = 0.0
 
     def speak(self, text):
-        """Threaded TTS (unchanged)."""
         if self.speaking_lock: return
-        
         def _run():
             self.speaking_lock = True
             try:
@@ -121,5 +148,4 @@ class AudioManager:
                 eng.runAndWait()
             except: pass
             self.speaking_lock = False
-            
-        threading.Thread(target=_run).start()
+        threading.Thread(target=_run).start()   
