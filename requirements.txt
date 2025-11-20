@@ -1,7 +1,10 @@
+numpy==1.26.4
 opencv-python
 ultralytics
 pygame
 pyttsx3
 google-generativeai
-numpy<2.0
+torch
+torchvision
+torchaudio
 requests
