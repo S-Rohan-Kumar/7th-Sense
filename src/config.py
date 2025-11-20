@@ -2,12 +2,13 @@ import os
 
 # --- HARDWARE ---
 # Use '0' for webcam, or your IP Webcam URL
+# CAMERA_SOURCE = "http://192.168.1.3:8080/video"
 CAMERA_SOURCE = 0
 USE_GPU = True  # Set to True for your RTX 3050
 
 # --- AI ---
 GEMINI_API_KEY = "AIzaSyDKZOhXoR5xRLgaALNRSJbG5yHZSq5KLSk" # PASTE KEY HERE
-YOLO_MODEL_PATH = "models/yolov8n.pt"
+YOLO_MODEL_PATH = "yolov8m.pt"
 
 # --- THRESHOLDS ---
 CONFIDENCE_THRESHOLD = 0.5

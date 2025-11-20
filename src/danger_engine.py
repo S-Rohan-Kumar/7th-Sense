@@ -8,7 +8,7 @@ class DangerEngine:
         print("[System] Initializing Danger Engine (YOLO)...")
         
         # Force download if missing
-        self.model = YOLO('yolov8n.pt') 
+        self.model = YOLO('yolov8m.pt') 
         
         # GPU Acceleration Logic
         if USE_GPU and torch.cuda.is_available():
