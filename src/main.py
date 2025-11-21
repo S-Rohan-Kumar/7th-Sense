@@ -4,12 +4,14 @@ import numpy as np
 import pyaudio
 import wave
 import os
+import re  # Essential for cleaning Gemini timestamps
 
 from vision_stream import VisionStream
 from danger_engine import DangerEngine
 from audio_manager import AudioManager
 from context_engine import ContextEngine
-from config import BRIGHTNESS_TRIGGER
+from navigation_engine import NavigationEngine 
+from config import BRIGHTNESS_TRIGGER, ORS_API_KEY
 
 # --- AUDIO RECORDING CONFIG ---
 CHUNK = 1024
@@ -21,71 +23,39 @@ WAVE_OUTPUT_FILENAME = "user_query.wav"
 def record_audio_input():
     """
     Records audio until silence is detected OR a timeout is reached.
-    Dynamic stopping for faster response times.
     """
     p = pyaudio.PyAudio()
-    
-    # --- SILENCE DETECTION CONFIG ---
-    # Increase THRESHOLD if the system cuts off too early in noisy rooms
     THRESHOLD = 600       
-    SILENCE_LIMIT = 1.2   # Seconds of silence to wait before stopping
-    MAX_DURATION = 10.0   # Hard limit
+    SILENCE_LIMIT = 1.2   
+    MAX_DURATION = 10.0   
     
     try:
-        stream = p.open(format=FORMAT,
-                        channels=CHANNELS,
-                        rate=RATE,
-                        input=True,
-                        frames_per_buffer=CHUNK)
-
+        stream = p.open(format=FORMAT, channels=CHANNELS, rate=RATE, input=True, frames_per_buffer=CHUNK)
         print("[System] Listening... (Speak now)")
         frames = []
-        
         start_time = time.time()
         last_sound_time = time.time()
         speech_started = False
         
         while True:
-            # Read data
             data = stream.read(CHUNK, exception_on_overflow=False)
             frames.append(data)
-            
-            # Convert buffer to numpy array to check loudness
             audio_data = np.frombuffer(data, dtype=np.int16)
             volume = np.abs(audio_data).mean()
-            
             current_time = time.time()
             total_duration = current_time - start_time
             
-            # 1. Check for Speech (Activity)
             if volume > THRESHOLD:
                 last_sound_time = current_time
-                if not speech_started:
-                    speech_started = True
-                    print("[System] Speech detected...")
-
-            # 2. Check for Silence (Stop Condition)
-            if speech_started:
-                silence_duration = current_time - last_sound_time
-                if silence_duration > SILENCE_LIMIT:
-                    print(f"[System] Silence detected ({SILENCE_LIMIT}s). Stopping.")
-                    break
-            
-            # 3. Hard Timeout (Safety)
-            if total_duration > MAX_DURATION:
-                print("[System] Max duration reached.")
-                break
-                
-            # 4. Initial Timeout (If no one speaks at all for 4 seconds)
-            if not speech_started and total_duration > 4.0:
-                 print("[System] No speech detected.")
-                 break
+                if not speech_started: speech_started = True
+            if speech_started and (current_time - last_sound_time > SILENCE_LIMIT): break
+            if total_duration > MAX_DURATION: break
+            if not speech_started and total_duration > 4.0: break
 
         stream.stop_stream()
         stream.close()
         p.terminate()
         
-        # Only save if we actually captured speech
         if len(frames) > 0 and speech_started:
             wf = wave.open(WAVE_OUTPUT_FILENAME, 'wb')
             wf.setnchannels(CHANNELS)
@@ -97,7 +67,7 @@ def record_audio_input():
         return False
 
     except Exception as e:
-        print(f"[Audio Error] Could not record: {e}")
+        print(f"[Audio Error] {e}")
         return False
 
 def main():
@@ -110,24 +80,20 @@ def main():
     audio = AudioManager()
     audio.start()
     
-    # Initialize the Context Engine
     context_ai = ContextEngine(tts_callback=audio.speak)
+    nav_engine = NavigationEngine(api_key=ORS_API_KEY)
 
     print("\n=== SIXTHSENSE ONLINE ===")
     audio.speak("System Online.")
 
-    # --- STATE MEMORY ---
     last_danger_time = 0
     DANGER_HOLD_DURATION = 1.0 
-    
-    # --- CONTEXT TRIGGER MEMORY ---
     darkness_start_time = 0
     is_dark_state = False
     TRIGGER_DURATION = 2.0 
 
     try:
         while True:
-            # 1. Get Frame
             frame = vision.read()
             if frame is None: continue
 
@@ -135,7 +101,7 @@ def main():
             height, width = inf_frame.shape[:2]
 
             # ==================================================
-            # 2. CONTEXT TRIGGER LOGIC (The "Ask" Mode)
+            # 1. CONTEXT TRIGGER (ROUTER)
             # ==================================================
             gray_avg = np.mean(cv2.cvtColor(inf_frame, cv2.COLOR_BGR2GRAY))
             
@@ -148,113 +114,140 @@ def main():
                 
                 if elapsed > TRIGGER_DURATION:
                     # --- TRIGGER ACTIVATED ---
-                    audio.silence() # Stop any danger noises
-                    audio.speak("Ready. Remove hand.")
+                    audio.silence()
+                    audio.speak("Ready.")
                     
-                    # A. Wait for Uncover (Just wait for light, DON'T capture yet)
                     while True:
                         temp = vision.read()
                         if temp is None: continue
                         if np.mean(cv2.cvtColor(temp, cv2.COLOR_BGR2GRAY)) > BRIGHTNESS_TRIGGER:
-                            # User has removed hand, proceed
                             break
                         time.sleep(0.05)
                     
-                    # B. Prompt User & Record (Dynamic Silence Detection)
                     audio.speak("Listening.")
                     success = record_audio_input()
-                    
-                    # [OPTIMIZATION] Capture the frame AFTER audio finishes
-                    # This ensures the camera sees what the user was describing/pointing at
                     target_frame = vision.read() 
-                    
                     audio.speak("Thinking.")
                     
-                    # C. Process Audio & Image
                     if success and target_frame is not None:
-                        # 1. Transcribe Audio to Text
-                        user_question = context_ai.transcribe_audio(WAVE_OUTPUT_FILENAME)
-                        print(f"[User Asked] {user_question}")
+                        user_q = context_ai.transcribe_audio(WAVE_OUTPUT_FILENAME)
+                        print(f"[User Asked Raw] {user_q}")
 
-                        if user_question and len(user_question) > 2:
-                            # 2. If user spoke, answer their specific question
-                            context_ai.answer_question(target_frame, user_question)
+                        if user_q:
+                            # --- AGGRESSIVE TEXT CLEANING ---
+                            # 1. Remove [Brackets]
+                            clean_q = re.sub(r'\[.*?\]', '', user_q)
+                            # 2. Remove Timestamps (00:00 or 00:00:00)
+                            clean_q = re.sub(r'\b\d{2}:\d{2}\b', '', clean_q)
+                            clean_q = re.sub(r'\b\d{2}:\d{2}:\d{2}\b', '', clean_q)
+                            # 3. Remove "0000" artifacts
+                            clean_q = re.sub(r'\b0+\b', '', clean_q)
+                            # 4. Standard clean
+                            clean_q = re.sub(r'[^\w\s]', '', clean_q).strip().lower()
+                            # 5. Fix spaces
+                            clean_q = re.sub(r'\s+', ' ', clean_q)
+
+                            print(f"[Cleaned Command] {clean_q}")
+
+                            if len(clean_q) > 2:
+                                # --- ROUTER LOGIC ---
+                                if "take me to" in clean_q or "navigate to" in clean_q:
+                                    dest = clean_q.replace("take me to", "").replace("navigate to", "").strip()
+                                    
+                                    if len(dest) > 2:
+                                        audio.speak(f"Calculating route to {dest}")
+                                        # Use "Current Location" string, Map Engine handles the coordinates
+                                        msg = nav_engine.calculate_route("Current Location", dest)
+                                        audio.speak(msg)
+                                        
+                                        # Speak first instruction immediately
+                                        time.sleep(3.0)
+                                        first_step = nav_engine.get_next_instruction()
+                                        if first_step: audio.speak(first_step)
+                                    else:
+                                        audio.speak("Destination not understood.")
+                                else:
+                                    context_ai.answer_question(target_frame, user_q)
+                            else:
+                                context_ai.describe_scene(target_frame)
                         else:
-                            # 3. If silence/noise, just describe the scene
-                            print("[System] No clear question. Defaulting to description.")
                             context_ai.describe_scene(target_frame)
-                    
                     elif target_frame is not None:
-                        # Fallback if audio recording failed but we have a frame
                         context_ai.describe_scene(target_frame)
                     
-                    # D. Reset & Cooldown
                     is_dark_state = False
                     darkness_start_time = 0
-                    
-                    # Delete the temp audio file to stay clean
                     if os.path.exists(WAVE_OUTPUT_FILENAME):
                         os.remove(WAVE_OUTPUT_FILENAME)
-
-                    time.sleep(3.0) 
+                    time.sleep(2.0) 
                     continue
             else:
                 is_dark_state = False
                 darkness_start_time = 0
 
             # ==================================================
-            # [OPTIMIZATION] PAUSE/RESUME LOGIC
+            # 2. PAUSE LOGIC
             # ==================================================
-            # Pause danger detection if Gemini is thinking OR Audio is speaking
-            if context_ai.is_busy or audio.speaking_lock:
-                # Update display but skip heavy processing
-                cv2.putText(inf_frame, "PAUSED: Processing...", (50, height - 50), 
+            if context_ai.is_busy:
+                cv2.putText(inf_frame, "PAUSED: AI Thinking...", (50, height - 50), 
                            cv2.FONT_HERSHEY_SIMPLEX, 0.7, (255, 255, 255), 2)
                 cv2.imshow("SixthSense Brain", inf_frame)
-                
                 if cv2.waitKey(1) & 0xFF == ord('q'): break
-                
-                # Yield execution to let other threads run smoothly
                 time.sleep(0.05) 
                 continue 
 
             # ==================================================
-            # 3. Danger Analysis (Standard Loop)
+            # 3. MULTI-LAYER SAFETY & GUIDANCE
             # ==================================================
             
+            # LAYER A: YOLO (Critical)
             is_danger, danger_name, closest_obj = danger_ai.analyze(inf_frame)
-            
             current_time = time.time()
             if is_danger: last_danger_time = current_time
             in_danger_mode = (current_time - last_danger_time) < DANGER_HOLD_DURATION
 
             if in_danger_mode:
-                coverage = 0
                 pan = 0
+                coverage = 0
                 if closest_obj:
-                    max_area = width * height
-                    coverage = closest_obj['area'] / max_area
+                    coverage = closest_obj['area'] / (width * height)
                     pan = (closest_obj['center_x'] - (width/2)) / (width/2)
                 
                 label = danger_name if is_danger else "DANGER"
                 
-                # [CHANGED] Tuned Thresholds for Better Accuracy
-                if coverage > 0.35: # Lowered from 0.40 for earlier critical warning
+                if coverage > 0.35:
                     audio.set_danger_critical(pan)
                     cv2.putText(inf_frame, f"CRITICAL: {label}", (50, 50), cv2.FONT_HERSHEY_SIMPLEX, 1, (0, 0, 255), 3)
                 elif coverage > 0.15:
                     audio.set_danger_approaching(pan, label)
                     cv2.putText(inf_frame, f"WARNING: {label}", (50, 50), cv2.FONT_HERSHEY_SIMPLEX, 1, (0, 165, 255), 3)
-                elif coverage > 0.05: # Added noise filter (must be > 5% visible)
+                elif coverage > 0.05:
                     audio.set_danger_far(pan)
                     cv2.putText(inf_frame, f"DETECTED: {label}", (50, 50), cv2.FONT_HERSHEY_SIMPLEX, 1, (0, 255, 255), 3)
                 else:
                     audio.silence()
+
+            # LAYER B: NAVIGATION (Only if Safe)
+            elif nav_engine.is_navigating:
+                nav_msg = nav_engine.get_next_instruction()
+                if nav_msg:
+                    audio.speak(nav_msg)
+                else:
+                    # Visual Path Guidance
+                    deviation = nav_engine.get_path_deviation(inf_frame)
+                    if deviation == 'left':
+                        audio.set_danger_far(0.8) 
+                        cv2.putText(inf_frame, ">> VEER RIGHT >>", (200, 320), cv2.FONT_HERSHEY_SIMPLEX, 1, (0,255,0), 2)
+                    elif deviation == 'right':
+                        audio.set_danger_far(-0.8)
+                        cv2.putText(inf_frame, "<< VEER LEFT <<", (200, 320), cv2.FONT_HERSHEY_SIMPLEX, 1, (0,255,0), 2)
+                    else:
+                        audio.silence()
             
+            # LAYER C: PROXIMITY (Fallback)
             elif closest_obj:
                 pan = (closest_obj['center_x'] - (width/2)) / (width/2)
-                max_area = width * height
-                coverage = closest_obj['area'] / max_area 
+                coverage = closest_obj['area'] / (width * height)
                 x1,y1,x2,y2 = closest_obj['box']
                 cv2.rectangle(inf_frame, (x1,y1), (x2,y2), (0,255,0), 2)
 
@@ -267,8 +260,7 @@ def main():
                 audio.silence()
 
             cv2.imshow("SixthSense Brain", inf_frame)
-            if cv2.waitKey(1) & 0xFF == ord('q'):
-                break
+            if cv2.waitKey(1) & 0xFF == ord('q'): break
 
     except KeyboardInterrupt:
         print("Shutting down...")
