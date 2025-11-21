@@ -8,8 +8,19 @@ import subprocess
 class AudioManager:
     def __init__(self):
         # --- CONFIGURATION ---
-        self.sample_rate = 44100
         self.volume = 0.5
+        
+        # --- ROBUST DEVICE & SAMPLERATE DETECTION ---
+        # We query the OS for the 'default' output device (e.g., your Bluetooth buds)
+        # and strictly use its preferred Sample Rate.
+        try:
+            device_info = sd.query_devices(kind='output')
+            self.sample_rate = int(device_info['default_samplerate'])
+            print(f"[Audio] System Default Device: '{device_info['name']}' at {self.sample_rate}Hz")
+        except Exception as e:
+            print(f"[Audio Warning] Could not query device: {e}")
+            # 48000 is safer for modern Bluetooth than 44100
+            self.sample_rate = 48000 
         
         # --- STATE VARIABLES ---
         self.target_freq = 440.0
@@ -30,6 +41,8 @@ class AudioManager:
         self.last_spoken_obj = "" 
         
         # Init Stream
+        # We do NOT pass a specific device ID. We let the OS route to the default.
+        # We ONLY enforce the correct sample rate.
         self.stream = sd.OutputStream(
             channels=2, 
             blocksize=512, 
@@ -59,11 +72,10 @@ class AudioManager:
         self.last_haptic_time = now
 
     def audio_callback(self, outdata, frames, time_info, status):
-        if status: print(status)
+        if status: print(f"[Audio Status] {status}")
         current_time = time.time()
         
-        # Calculate Stereo Pan for ALL modes
-        # Input Pan: -1 (Left) to 1 (Right) -> Normalized: 0 (Left) to 1 (Right)
+        # Calculate Stereo Pan
         norm_pan = (self.current_pan + 1) / 2
         norm_pan = max(0.0, min(1.0, norm_pan))
 
@@ -74,7 +86,7 @@ class AudioManager:
             freq_sweep = 800 + 400 * np.abs(np.sin(2 * np.pi * 2 * t)) 
             tone = self.volume * 0.8 * (2 * (t * freq_sweep - np.floor(0.5 + t * freq_sweep)))
             
-            # Apply Pan to Siren
+            # Apply Pan
             outdata[:, 0] = tone * (1.0 - norm_pan) # Left
             outdata[:, 1] = tone * norm_pan         # Right
             
@@ -95,7 +107,7 @@ class AudioManager:
                 t = t.reshape(-1, 1)
                 tone = self.volume * np.sin(2 * np.pi * self.target_freq * t)
                 
-                # Apply Pan to Beep
+                # Apply Pan
                 outdata[:, 0] = (tone * (1.0 - norm_pan)).flatten()
                 outdata[:, 1] = (tone * norm_pan).flatten()
                 self.phase += frames
@@ -134,7 +146,7 @@ class AudioManager:
     def set_danger_critical(self, pan):
         """Level 3: Close (<0.5m). Siren + Heavy Haptic."""
         self.mode = "siren"
-        self.current_pan = pan # Now respects panning!
+        self.current_pan = pan 
         self._trigger_haptic("heavy")
 
     # --- SAFE OBJECT INTERFACE ---
@@ -169,6 +181,8 @@ class AudioManager:
             self.speaking_lock = True
             try:
                 eng = pyttsx3.init()
+                # 150 is a good comfortable speed
+                eng.setProperty('rate', 150) 
                 eng.say(text)
                 eng.runAndWait()
             except: pass
