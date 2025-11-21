@@ -9,7 +9,7 @@ CAMERA_SOURCE = 0
 USE_GPU = True  # Set to True for your RTX 3050
 
 # --- AI ---
-GEMINI_API_KEY = "AIzaSyCYRbncQykpDfu7d9TFxgesPVR5WRMzAqY" # PASTE KEY HERE
+GEMINI_API_KEY = "AIzaSyAk03ZXEpBwGWvfCmu1MhylDOC15xCuMgY" # PASTE KEY HERE
 YOLO_MODEL_PATH = "yolov8l.pt"
 
 # --- THRESHOLDS ---

@@ -177,8 +177,11 @@ class AudioManager:
 
     def speak(self, text):
         if self.speaking_lock: return
+        
+        # [OPTIMIZATION] Set lock IMMEDIATELY before thread spawns
+        self.speaking_lock = True
+        
         def _run():
-            self.speaking_lock = True
             try:
                 eng = pyttsx3.init()
                 # 150 is a good comfortable speed
@@ -186,5 +189,8 @@ class AudioManager:
                 eng.say(text)
                 eng.runAndWait()
             except: pass
-            self.speaking_lock = False
+            finally:
+                # Release lock only when audio is actually finished
+                self.speaking_lock = False
+                
         threading.Thread(target=_run).start()

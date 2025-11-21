@@ -79,7 +79,6 @@ class ContextEngine:
     def transcribe_audio(self, audio_file_path: str) -> str:
         """
         Synchronous call to transcribe audio using Gemini.
-        Included from your new code.
         """
         if not self.client or not os.path.exists(audio_file_path):
             return ""
@@ -125,7 +124,8 @@ class ContextEngine:
             self.tts("I am not connected to the language service.")
             return
 
-        prompt = f"I am blind. Based *only* on the image, answer my question in a concise and helpful way. Question: \"{question}\""
+        # [OPTIMIZATION] Shortened system instruction for faster generation
+        prompt = f"Answer concisely. Question: \"{question}\""
         
         print(f"[System] Triggering QA: {question}")
         threading.Thread(target=self._gemini_worker, args=(frame, prompt), daemon=True).start()

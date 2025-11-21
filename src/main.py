@@ -108,24 +108,27 @@ def main():
                     audio.silence() # Stop any danger noises
                     audio.speak("Ready. Remove hand.")
                     
-                    # A. Wait for Uncover (to get the image)
-                    target_frame = None
+                    # A. Wait for Uncover (Just wait for light, DON'T capture yet)
                     while True:
                         temp = vision.read()
                         if temp is None: continue
                         if np.mean(cv2.cvtColor(temp, cv2.COLOR_BGR2GRAY)) > BRIGHTNESS_TRIGGER:
-                            target_frame = temp
+                            # We just break here to confirm user is ready
                             break
                         time.sleep(0.05)
                     
                     # B. Prompt User & Record
                     audio.speak("Listening.")
-                    success = record_audio_input() # <--- Freezes loop for 4 seconds to record
+                    success = record_audio_input() # <--- Records for 4 seconds
+                    
+                    # [CHANGE] Capture the frame HERE (After recording finishes)
+                    # This ensures the camera sees what you were talking about
+                    target_frame = vision.read() 
                     
                     audio.speak("Thinking.")
                     
                     # C. Process Audio & Image
-                    if success:
+                    if success and target_frame is not None:
                         # 1. Transcribe Audio to Text
                         user_question = context_ai.transcribe_audio(WAVE_OUTPUT_FILENAME)
                         print(f"[User Asked] {user_question}")
@@ -137,7 +140,7 @@ def main():
                             # 3. If silence/noise, just describe the scene
                             print("[System] No clear question detected. Defaulting to description.")
                             context_ai.describe_scene(target_frame)
-                    else:
+                    elif target_frame is not None:
                         context_ai.describe_scene(target_frame)
                     
                     # D. Reset & Cooldown
@@ -153,6 +156,21 @@ def main():
             else:
                 is_dark_state = False
                 darkness_start_time = 0
+
+            # ==================================================
+            # [OPTIMIZATION] PAUSE/RESUME LOGIC
+            # ==================================================
+            # Pause detection if Gemini is thinking OR Audio is speaking
+            if context_ai.is_busy or audio.speaking_lock:
+                # Update display but skip heavy processing
+                cv2.putText(inf_frame, "PAUSED: Processing...", (50, height - 50), 
+                           cv2.FONT_HERSHEY_SIMPLEX, 0.7, (255, 255, 255), 2)
+                cv2.imshow("SixthSense Brain", inf_frame)
+                if cv2.waitKey(1) & 0xFF == ord('q'): break
+                
+                # Yield execution to let other threads run smoothly
+                time.sleep(0.05) 
+                continue 
 
             # ==================================================
             # 3. Danger Analysis (Standard Loop)
