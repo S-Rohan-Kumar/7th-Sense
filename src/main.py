@@ -115,7 +115,7 @@ def main():
                 label = danger_name if is_danger else "DANGER"
                 
                 if coverage > 0.40:
-                    audio.set_level_3_critical(pan)
+                    audio.set_danger_critical(pan)
                     cv2.putText(inf_frame, f"CRITICAL: {label}", (50, 50), cv2.FONT_HERSHEY_SIMPLEX, 1, (0, 0, 255), 3)
                 elif coverage > 0.15:
                     audio.set_danger_approaching(pan, label)
