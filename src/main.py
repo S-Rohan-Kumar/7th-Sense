@@ -1,12 +1,61 @@
 import cv2
 import time
 import numpy as np
+import pyaudio
+import wave
+import os
 
 from vision_stream import VisionStream
 from danger_engine import DangerEngine
 from audio_manager import AudioManager
 from context_engine import ContextEngine
 from config import BRIGHTNESS_TRIGGER
+
+# --- AUDIO RECORDING CONFIG ---
+CHUNK = 1024
+FORMAT = pyaudio.paInt16
+CHANNELS = 1
+RATE = 44100
+RECORD_SECONDS = 4 # How long to listen to the user
+WAVE_OUTPUT_FILENAME = "user_query.wav"
+
+def record_audio_input():
+    """
+    Records audio from the default microphone for RECORD_SECONDS.
+    Returns True if successful, False otherwise.
+    """
+    p = pyaudio.PyAudio()
+    
+    try:
+        stream = p.open(format=FORMAT,
+                        channels=CHANNELS,
+                        rate=RATE,
+                        input=True,
+                        frames_per_buffer=CHUNK)
+
+        print("[System] Recording audio...")
+        frames = []
+
+        for i in range(0, int(RATE / CHUNK * RECORD_SECONDS)):
+            data = stream.read(CHUNK)
+            frames.append(data)
+
+        print("[System] Recording finished.")
+
+        stream.stop_stream()
+        stream.close()
+        p.terminate()
+
+        wf = wave.open(WAVE_OUTPUT_FILENAME, 'wb')
+        wf.setnchannels(CHANNELS)
+        wf.setsampwidth(p.get_sample_size(FORMAT))
+        wf.setframerate(RATE)
+        wf.writeframes(b''.join(frames))
+        wf.close()
+        return True
+    except Exception as e:
+        print(f"[Audio Error] Could not record: {e}")
+        return False
 
 def main():
     print("[Init] Starting Vision Stream...")
@@ -17,6 +66,8 @@ def main():
     danger_ai = DangerEngine()
     audio = AudioManager()
     audio.start()
+    
+    # Initialize the Context Engine
     context_ai = ContextEngine(tts_callback=audio.speak)
 
     print("\n=== SIXTHSENSE ONLINE ===")
@@ -29,7 +80,7 @@ def main():
     # --- CONTEXT TRIGGER MEMORY ---
     darkness_start_time = 0
     is_dark_state = False
-    TRIGGER_DURATION = 2.0 # Must cover lens for 2 seconds
+    TRIGGER_DURATION = 2.0 
 
     try:
         while True:
@@ -40,66 +91,76 @@ def main():
             inf_frame = cv2.resize(frame, (640, 640))
             height, width = inf_frame.shape[:2]
 
-            # 2. CONTEXT TRIGGER LOGIC (Lens Cover)
+            # ==================================================
+            # 2. CONTEXT TRIGGER LOGIC (The "Ask" Mode)
+            # ==================================================
             gray_avg = np.mean(cv2.cvtColor(inf_frame, cv2.COLOR_BGR2GRAY))
             
             if gray_avg < BRIGHTNESS_TRIGGER:
                 if not is_dark_state:
-                    # First moment of darkness
                     darkness_start_time = time.time()
                     is_dark_state = True
                 
-                # Check how long it has been dark
                 elapsed = time.time() - darkness_start_time
                 
                 if elapsed > TRIGGER_DURATION:
-                    # TRIGGER!
-                    audio.silence()
-                    audio.speak("Scanning.") # Feedback that trigger worked
+                    # --- TRIGGER ACTIVATED ---
+                    audio.silence() # Stop any danger noises
+                    audio.speak("Ready. Remove hand.")
                     
-                    # Capture the frame *now* (better quality than the dark one)
-                    # Actually, if lens is covered, the frame is black.
-                    # TRICK: We need the user to UNCOVER the lens to take the picture?
-                    # OR: We assume they point the camera at the object and THEN cover it?
-                    # Usually "Cover to Trigger" implies:
-                    # 1. Cover lens (Trigger mode)
-                    # 2. Uncover lens (Take photo)
-                    
-                    # Let's stick to your requirement: "Activates when closed... takes input"
-                    # If the lens is covered, the image is black. Gemini can't see it.
-                    # LOGIC CHANGE: 
-                    # We wait for them to UNCOVER the lens to snap the photo.
-                    
-                    audio.speak("Remove hand to capture.")
-                    
-                    # Wait for light to return
+                    # A. Wait for Uncover (to get the image)
+                    target_frame = None
                     while True:
-                        frame = vision.read()
-                        if np.mean(cv2.cvtColor(frame, cv2.COLOR_BGR2GRAY)) > BRIGHTNESS_TRIGGER:
+                        temp = vision.read()
+                        if temp is None: continue
+                        if np.mean(cv2.cvtColor(temp, cv2.COLOR_BGR2GRAY)) > BRIGHTNESS_TRIGGER:
+                            target_frame = temp
                             break
-                        time.sleep(0.1)
+                        time.sleep(0.05)
                     
-                    # Snap photo immediately after uncovering
-                    audio.speak("Capturing.")
-                    context_ai.describe_scene(frame)
+                    # B. Prompt User & Record
+                    audio.speak("Listening.")
+                    success = record_audio_input() # <--- Freezes loop for 4 seconds to record
                     
-                    # Reset logic
+                    audio.speak("Thinking.")
+                    
+                    # C. Process Audio & Image
+                    if success:
+                        # 1. Transcribe Audio to Text
+                        user_question = context_ai.transcribe_audio(WAVE_OUTPUT_FILENAME)
+                        print(f"[User Asked] {user_question}")
+
+                        if user_question and len(user_question) > 2:
+                            # 2. If user spoke, answer their specific question
+                            context_ai.answer_question(target_frame, user_question)
+                        else:
+                            # 3. If silence/noise, just describe the scene
+                            print("[System] No clear question detected. Defaulting to description.")
+                            context_ai.describe_scene(target_frame)
+                    else:
+                        context_ai.describe_scene(target_frame)
+                    
+                    # D. Reset & Cooldown
                     is_dark_state = False
                     darkness_start_time = 0
-                    time.sleep(3.0) # Cooldown so it doesn't double-trigger
+                    
+                    # Delete the temp audio file to stay clean
+                    if os.path.exists(WAVE_OUTPUT_FILENAME):
+                        os.remove(WAVE_OUTPUT_FILENAME)
+
+                    time.sleep(3.0) 
                     continue
             else:
-                # Reset if they uncover too early (aborted trigger)
                 is_dark_state = False
                 darkness_start_time = 0
 
-
+            # ==================================================
             # 3. Danger Analysis (Standard Loop)
-            is_danger, danger_name, closest_obj = danger_ai.analyze(inf_frame)
-
-            # ... (Rest of your Danger Logic remains same) ...
+            # ==================================================
             
-            # 1. DANGER CHECK (Priority)
+            # Standard danger detection continues here...
+            is_danger, danger_name, closest_obj = danger_ai.analyze(inf_frame)
+            
             current_time = time.time()
             if is_danger: last_danger_time = current_time
             in_danger_mode = (current_time - last_danger_time) < DANGER_HOLD_DURATION
