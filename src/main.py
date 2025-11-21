@@ -16,15 +16,20 @@ CHUNK = 1024
 FORMAT = pyaudio.paInt16
 CHANNELS = 1
 RATE = 44100
-RECORD_SECONDS = 4 # How long to listen to the user
 WAVE_OUTPUT_FILENAME = "user_query.wav"
 
 def record_audio_input():
     """
-    Records audio from the default microphone for RECORD_SECONDS.
-    Returns True if successful, False otherwise.
+    Records audio until silence is detected OR a timeout is reached.
+    Dynamic stopping for faster response times.
     """
     p = pyaudio.PyAudio()
+    
+    # --- SILENCE DETECTION CONFIG ---
+    # Increase THRESHOLD if the system cuts off too early in noisy rooms
+    THRESHOLD = 600       
+    SILENCE_LIMIT = 1.2   # Seconds of silence to wait before stopping
+    MAX_DURATION = 10.0   # Hard limit
     
     try:
         stream = p.open(format=FORMAT,
@@ -33,26 +38,64 @@ def record_audio_input():
                         input=True,
                         frames_per_buffer=CHUNK)
 
-        print("[System] Recording audio...")
+        print("[System] Listening... (Speak now)")
         frames = []
-
-        for i in range(0, int(RATE / CHUNK * RECORD_SECONDS)):
-            data = stream.read(CHUNK)
+        
+        start_time = time.time()
+        last_sound_time = time.time()
+        speech_started = False
+        
+        while True:
+            # Read data
+            data = stream.read(CHUNK, exception_on_overflow=False)
             frames.append(data)
+            
+            # Convert buffer to numpy array to check loudness
+            audio_data = np.frombuffer(data, dtype=np.int16)
+            volume = np.abs(audio_data).mean()
+            
+            current_time = time.time()
+            total_duration = current_time - start_time
+            
+            # 1. Check for Speech (Activity)
+            if volume > THRESHOLD:
+                last_sound_time = current_time
+                if not speech_started:
+                    speech_started = True
+                    print("[System] Speech detected...")
 
-        print("[System] Recording finished.")
+            # 2. Check for Silence (Stop Condition)
+            if speech_started:
+                silence_duration = current_time - last_sound_time
+                if silence_duration > SILENCE_LIMIT:
+                    print(f"[System] Silence detected ({SILENCE_LIMIT}s). Stopping.")
+                    break
+            
+            # 3. Hard Timeout (Safety)
+            if total_duration > MAX_DURATION:
+                print("[System] Max duration reached.")
+                break
+                
+            # 4. Initial Timeout (If no one speaks at all for 4 seconds)
+            if not speech_started and total_duration > 4.0:
+                 print("[System] No speech detected.")
+                 break
 
         stream.stop_stream()
         stream.close()
         p.terminate()
+        
+        # Only save if we actually captured speech
+        if len(frames) > 0 and speech_started:
+            wf = wave.open(WAVE_OUTPUT_FILENAME, 'wb')
+            wf.setnchannels(CHANNELS)
+            wf.setsampwidth(p.get_sample_size(FORMAT))
+            wf.setframerate(RATE)
+            wf.writeframes(b''.join(frames))
+            wf.close()
+            return True
+        return False
 
-        wf = wave.open(WAVE_OUTPUT_FILENAME, 'wb')
-        wf.setnchannels(CHANNELS)
-        wf.setsampwidth(p.get_sample_size(FORMAT))
-        wf.setframerate(RATE)
-        wf.writeframes(b''.join(frames))
-        wf.close()
-        return True
     except Exception as e:
         print(f"[Audio Error] Could not record: {e}")
         return False
@@ -113,16 +156,16 @@ def main():
                         temp = vision.read()
                         if temp is None: continue
                         if np.mean(cv2.cvtColor(temp, cv2.COLOR_BGR2GRAY)) > BRIGHTNESS_TRIGGER:
-                            # We just break here to confirm user is ready
+                            # User has removed hand, proceed
                             break
                         time.sleep(0.05)
                     
-                    # B. Prompt User & Record
+                    # B. Prompt User & Record (Dynamic Silence Detection)
                     audio.speak("Listening.")
-                    success = record_audio_input() # <--- Records for 4 seconds
+                    success = record_audio_input()
                     
-                    # [CHANGE] Capture the frame HERE (After recording finishes)
-                    # This ensures the camera sees what you were talking about
+                    # [OPTIMIZATION] Capture the frame AFTER audio finishes
+                    # This ensures the camera sees what the user was describing/pointing at
                     target_frame = vision.read() 
                     
                     audio.speak("Thinking.")
@@ -138,9 +181,11 @@ def main():
                             context_ai.answer_question(target_frame, user_question)
                         else:
                             # 3. If silence/noise, just describe the scene
-                            print("[System] No clear question detected. Defaulting to description.")
+                            print("[System] No clear question. Defaulting to description.")
                             context_ai.describe_scene(target_frame)
+                    
                     elif target_frame is not None:
+                        # Fallback if audio recording failed but we have a frame
                         context_ai.describe_scene(target_frame)
                     
                     # D. Reset & Cooldown
@@ -160,12 +205,13 @@ def main():
             # ==================================================
             # [OPTIMIZATION] PAUSE/RESUME LOGIC
             # ==================================================
-            # Pause detection if Gemini is thinking OR Audio is speaking
+            # Pause danger detection if Gemini is thinking OR Audio is speaking
             if context_ai.is_busy or audio.speaking_lock:
                 # Update display but skip heavy processing
                 cv2.putText(inf_frame, "PAUSED: Processing...", (50, height - 50), 
                            cv2.FONT_HERSHEY_SIMPLEX, 0.7, (255, 255, 255), 2)
                 cv2.imshow("SixthSense Brain", inf_frame)
+                
                 if cv2.waitKey(1) & 0xFF == ord('q'): break
                 
                 # Yield execution to let other threads run smoothly
@@ -176,7 +222,6 @@ def main():
             # 3. Danger Analysis (Standard Loop)
             # ==================================================
             
-            # Standard danger detection continues here...
             is_danger, danger_name, closest_obj = danger_ai.analyze(inf_frame)
             
             current_time = time.time()
