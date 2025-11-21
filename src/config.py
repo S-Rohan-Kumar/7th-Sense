@@ -1,18 +1,20 @@
 import os
+from dotenv import load_dotenv
 
+load_dotenv()
 # --- HARDWARE ---
 # Use '0' for webcam, or your IP Webcam URL
 # CAMERA_SOURCE = "http://172.18.16.204:8080/video"
 # CAMERA_SOURCE = "http://192.168.1.5:8080/video"
-# CAMERA_SOURCE = "http://100.124.59.78:8080/video"
+#CAMERA_SOURCE = "http://100.124.59.78:8080/video"
 CAMERA_SOURCE = 0
 USE_GPU = True  # Set to True for your RTX 3050
 
 # --- AI ---
-GEMINI_API_KEY = "AIzaSyCnQmNv94axXwiRMreZPN-8D5Yz50lNvsQ" # PASTE KEY HERE
+GEMINI_API_KEY = os.getenv("GEMINI_API_KEY")
 YOLO_MODEL_PATH = "yolov8l.pt"
 
-ORS_API_KEY = "eyJvcmciOiI1YjNjZTM1OTc4NTExMTAwMDFjZjYyNDgiLCJpZCI6IjliMjkwODAxNTEyNjRhZDM4ZjkwZjI0YTIyMDYzNzRlIiwiaCI6Im11cm11cjY0In0="
+ORS_API_KEY = os.getenv("ORS_API_KEY")
 DEMO_ORIGIN_COORDS = (77.534, 12.935)
 # --- THRESHOLDS ---
 CONFIDENCE_THRESHOLD = 0.5

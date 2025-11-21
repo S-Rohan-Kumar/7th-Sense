@@ -3,12 +3,10 @@ from openrouteservice.directions import directions
 import time
 import cv2
 import numpy as np
-# [NEW] Import config
 from config import ORS_API_KEY, DEMO_ORIGIN_COORDS
 
 class NavigationEngine:
     def __init__(self, api_key=None):
-        # Use key from config if not passed
         key_to_use = api_key if api_key else ORS_API_KEY
         
         self.client = None
@@ -23,40 +21,35 @@ class NavigationEngine:
         self.current_step_index = 0
         self.is_navigating = False
         self.last_update_time = 0
-        self.step_duration = 6.0  # Advance 1 step every 6s for demo
+        self.step_duration = 6.0  
         
-        # Mock Route (Fallback)
+        # [CHANGED] Updated Mock Route to use Steps instead of Meters
         self.mock_route = [
             "Route started. Head north.",
-            "In 10 meters, turn left.",
-            "Continue straight for 20 meters.",
-            "Turn right at the corridor.",
+            "In 15 steps, turn left.",
+            "Continue straight for 25 steps.",
+            "In 10 steps, turn right at the corridor.",
             "You have arrived."
         ]
 
     def calculate_route(self, start_text, end_text):
         """
-        Fetches REAL directions using OpenStreetMap data.
-        Note: ORS prefers coordinates, so for a hackathon demo, 
-        we will Geocode the destination text first.
+        Fetches REAL directions and converts distances to STEPS.
         """
         print(f"[Nav] Calculating: {start_text} -> {end_text}")
         self.steps = []
         
         if self.client:
             try:
-                # 1. Geocode the destination (Convert 'Library' to Lat/Lon)
-                # We assume start is fixed (DEMO_ORIGIN_COORDS) to save time/complexity
+                # 1. Geocode destination
                 geocode = self.client.pelias_search(text=end_text, focus_point=DEMO_ORIGIN_COORDS)
                 
                 if not geocode['features']:
                     return f"Could not find location: {end_text}"
                 
-                # Get coords of first result
                 dest_coords = geocode['features'][0]['geometry']['coordinates']
                 
                 # 2. Get Walking Directions
-                # ORS format is [[Lon, Lat], [Lon, Lat]]
                 route = directions(
                     self.client, 
                     coordinates=[DEMO_ORIGIN_COORDS, dest_coords],
@@ -64,17 +57,19 @@ class NavigationEngine:
                     format='geojson'
                 )
                 
-                # 3. Parse Steps
-                # ORS returns segments -> steps -> instruction
+                # 3. Parse & Convert to Steps
                 segments = route['features'][0]['properties']['segments']
                 self.steps.append(f"Route calculated. Walking to {end_text}.")
                 
                 for segment in segments:
                     for step in segment['steps']:
                         instr = step['instruction']
-                        dist = int(step['distance'])
-                        if dist > 0:
-                            self.steps.append(f"In {dist} meters, {instr}")
+                        dist_meters = int(step['distance'])
+                        
+                        if dist_meters > 0:
+                            # [LOGIC] 1 Step approx 0.75 meters
+                            steps_count = int(dist_meters / 0.75)
+                            self.steps.append(f"In {steps_count} steps, {instr}")
                         else:
                             self.steps.append(instr)
                             
@@ -109,7 +104,7 @@ class NavigationEngine:
         return None
 
     def get_path_deviation(self, frame):
-        """Visual Path Logic (Same as before)"""
+        """Visual Path Logic (Vanishing Point)"""
         if not self.is_navigating: return None
         try:
             gray = cv2.cvtColor(frame, cv2.COLOR_BGR2GRAY)
