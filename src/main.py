@@ -238,15 +238,18 @@ def main():
                 
                 label = danger_name if is_danger else "DANGER"
                 
-                if coverage > 0.40:
+                # [CHANGED] Tuned Thresholds for Better Accuracy
+                if coverage > 0.35: # Lowered from 0.40 for earlier critical warning
                     audio.set_danger_critical(pan)
                     cv2.putText(inf_frame, f"CRITICAL: {label}", (50, 50), cv2.FONT_HERSHEY_SIMPLEX, 1, (0, 0, 255), 3)
                 elif coverage > 0.15:
                     audio.set_danger_approaching(pan, label)
                     cv2.putText(inf_frame, f"WARNING: {label}", (50, 50), cv2.FONT_HERSHEY_SIMPLEX, 1, (0, 165, 255), 3)
-                else:
+                elif coverage > 0.05: # Added noise filter (must be > 5% visible)
                     audio.set_danger_far(pan)
                     cv2.putText(inf_frame, f"DETECTED: {label}", (50, 50), cv2.FONT_HERSHEY_SIMPLEX, 1, (0, 255, 255), 3)
+                else:
+                    audio.silence()
             
             elif closest_obj:
                 pan = (closest_obj['center_x'] - (width/2)) / (width/2)
@@ -255,7 +258,7 @@ def main():
                 x1,y1,x2,y2 = closest_obj['box']
                 cv2.rectangle(inf_frame, (x1,y1), (x2,y2), (0,255,0), 2)
 
-                if coverage > 0.40:
+                if coverage > 0.35:
                     audio.announce_proximity(closest_obj['label'], pan)
                     cv2.putText(inf_frame, f"CLOSE: {closest_obj['label']}", (x1, y1-10), cv2.FONT_HERSHEY_SIMPLEX, 0.6, (255,255,0), 2)
                 else:

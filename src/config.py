@@ -2,10 +2,10 @@ import os
 
 # --- HARDWARE ---
 # Use '0' for webcam, or your IP Webcam URL
-# CAMERA_SOURCE = "http://192.168.1.3:8080/video"
+CAMERA_SOURCE = "http://172.18.16.204:8080/video"
 # CAMERA_SOURCE = "http://192.168.1.5:8080/video"
 # CAMERA_SOURCE = "http://100.124.59.78:8080/video"
-CAMERA_SOURCE = 0
+# CAMERA_SOURCE = 0
 USE_GPU = True  # Set to True for your RTX 3050
 
 # --- AI ---

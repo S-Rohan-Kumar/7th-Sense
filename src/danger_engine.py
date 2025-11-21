@@ -35,7 +35,11 @@ class DangerEngine:
         danger_detected = False
         danger_label = ""
         closest_obj = None
-        max_area = 0
+        
+        # [CHANGED] Smart Selection Variables
+        max_score = 0 
+        # High priority classes get a score multiplier
+        PRIORITY = {'person': 2.0, 'car': 3.0, 'truck': 3.5, 'bus': 3.5, 'motorcycle': 2.5, 'bicycle': 2.0}
 
         for r in results:
             boxes = r.boxes
@@ -49,22 +53,34 @@ class DangerEngine:
                 x1, y1, x2, y2 = map(int, box.xyxy[0])
                 area = (x2 - x1) * (y2 - y1)
                 center_x = (x1 + x2) // 2
+                label = self.model.names[cls_id]
                 
-                # 1. Danger Check
+                # 1. Global Danger Check (Is there ANY danger in front?)
                 if cls_id in DANGER_CLASSES:
                     # Is it in front of us?
                     if center_zone_start < center_x < center_zone_end:
                         danger_detected = True
-                        danger_label = self.model.names[cls_id]
+                        danger_label = label
 
-                # 2. Sonar Tracking (Largest Object)
-                if area > max_area:
-                    max_area = area
+                # 2. Smart Object Selection
+                # Formula: Score = Size * ClassPriority * CenterBias
+                
+                # Get priority weight (default 1.0)
+                weight = PRIORITY.get(label, 1.0)
+                
+                # Calculate Center Bias (1.0 = perfectly centered, 0.0 = edge)
+                center_bias = 1.0 - (abs(center_x - (width / 2)) / width)
+                
+                # Final Score
+                score = area * weight * center_bias
+
+                if score > max_score:
+                    max_score = score
                     closest_obj = {
                         "center_x": center_x,
                         "area": area,
                         "box": (x1, y1, x2, y2),
-                        "label": self.model.names[cls_id]
+                        "label": label
                     }
 
         return danger_detected, danger_label, closest_obj
